@@ -1,0 +1,100 @@
+---
+title: "Homework 8"
+format: html
+editor: visual
+---
+
+## Part One: Data
+
+Loading Packages
+
+```{r}
+# Loading appropriate packages
+library(tidymodels)
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(lubridate)
+```
+
+Reading in Data from a .CSV file
+
+```{r}
+#| echo: false
+# Issue reading in data
+data <- read_csv("SeoulBikeData.csv", locale=locale(encoding="latin1"))
+# locale=locale(encoding="latin1") remedied the issue
+head(data)
+```
+
+## Step Two: EDA
+
+### 1: Checking for missingness
+
+```{r}
+# Checking for missing values across the variable
+colSums(is.na(data))
+# No missing values
+```
+
+### 2: Check the column types and the values within the columns to make sure they make sense
+
+```{r}
+# Checking column types
+glimpse(data)
+
+# Summary Statistics for numeric variables
+data |>
+  summarize(across(where(is.numeric), 
+                   list("mean" = ~ mean(.x), 
+                        "median" = ~ median(.x), 
+                        "sd" = ~ sd(.x), 
+                        "IQR" = ~ IQR(.x)),
+                   .names = "{.fn}_{.col}")) |> 
+  pivot_longer(cols = everything())
+
+# Checking unique values for categorical variables
+lapply(data[sapply(data, is.factor) | sapply(data, is.character)], unique)
+# Functioning Day variables are vague. May change later.  
+```
+
+### 3, 4, 5: Convert the Date column into an actual date (if need be). Recall the lubridate package. Turn the character variables (Seasons, Holiday, and Functioning Day) into factors. Rename the all the variables to have easy to use names.
+```{r}
+data <- data |>
+  mutate(
+    date = as_date(dmy(Date)),  # Reclassifies the date variable as Date
+    Seasons = as.factor(Seasons),  # Converts Seasons to a factor
+    Holiday = as.factor(Holiday),  # Converts Holiday to a factor
+    `Functioning Day` = as.factor(`Functioning Day`) # Converts `Functioning Day` to a factor
+    ) |> 
+  # Changing variable names for ease of use
+  rename(rented_bike_count = "Rented Bike Count",
+         hour = "Hour",
+         temperature = "Temperature(°C)",
+         humidity = "Humidity(%)",
+         wind_speed = "Wind Speed (m/s)",
+         visibility = "Visibility (10m)",
+         dew_point_temp = "Dew point temperature(°C)",
+         solar_radiation = "Solar Radiation (MJ/m2)",
+         rainfall = "Rainfall(mm)",
+         snowfall = "Snowfall (cm)",
+         seasons = "Seasons",
+         holiday = "Holiday",
+         functioning = "Functioning Day") |>
+  select(date, 
+         rented_bike_count, 
+         hour, 
+         temperature, 
+         humidity, 
+         wind_speed, 
+         visibility, 
+         dew_point_temp, 
+         solar_radiation, 
+         rainfall, 
+         snowfall, 
+         seasons, 
+         holiday, 
+         functioning)
+```
+
+
