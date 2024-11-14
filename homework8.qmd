@@ -6,18 +6,22 @@ editor: visual
 
 ## Part One: Data
 
-Loading Packages
-
 ```{r}
+#| echo: true
+#| include: false
 # Loading appropriate packages
 library(tidymodels)
 library(tidyverse)
 library(readr)
 library(ggplot2)
 library(lubridate)
+library(dplyr)
+library(parsnip)
+library(tune)
+library(workflows)
 ```
 
-Reading in Data from a .CSV file
+### Reading in Data from a .CSV file
 
 ```{r}
 #| echo: false
@@ -65,36 +69,333 @@ data <- data |>
     date = as_date(dmy(Date)),  # Reclassifies the date variable as Date
     Seasons = as.factor(Seasons),  # Converts Seasons to a factor
     Holiday = as.factor(Holiday),  # Converts Holiday to a factor
-    `Functioning Day` = as.factor(`Functioning Day`) # Converts `Functioning Day` to a factor
-    ) |> 
-  # Changing variable names for ease of use
-  rename(rented_bike_count = "Rented Bike Count",
-         hour = "Hour",
-         temperature = "Temperature(°C)",
-         humidity = "Humidity(%)",
-         wind_speed = "Wind Speed (m/s)",
-         visibility = "Visibility (10m)",
-         dew_point_temp = "Dew point temperature(°C)",
-         solar_radiation = "Solar Radiation (MJ/m2)",
-         rainfall = "Rainfall(mm)",
-         snowfall = "Snowfall (cm)",
-         seasons = "Seasons",
-         holiday = "Holiday",
-         functioning = "Functioning Day") |>
-  select(date, 
-         rented_bike_count, 
-         hour, 
-         temperature, 
-         humidity, 
-         wind_speed, 
-         visibility, 
-         dew_point_temp, 
-         solar_radiation, 
-         rainfall, 
-         snowfall, 
-         seasons, 
-         holiday, 
-         functioning)
+    `Functioning Day` = as.factor(`Functioning Day`)) |> # Converts `Functioning Day` to a factor
+  rename( # Changing variable names for ease of use
+    rented_bike_count = "Rented Bike Count",
+    hour = "Hour",
+    temperature = "Temperature(°C)",
+    humidity = "Humidity(%)",
+    wind_speed = "Wind speed (m/s)",
+    visibility = "Visibility (10m)",
+    dew_point_temp = "Dew point temperature(°C)",
+    solar_radiation = "Solar Radiation (MJ/m2)",
+    rainfall = "Rainfall(mm)",
+    snowfall = "Snowfall (cm)",
+    seasons = "Seasons",
+    holiday = "Holiday",
+    functioning = "Functioning Day") |>
+  select( # Selecting relavent variables
+    date, 
+    rented_bike_count, 
+    hour, 
+    temperature, 
+    humidity, 
+    wind_speed, 
+    visibility, 
+    dew_point_temp, 
+    solar_radiation, 
+    rainfall, 
+    snowfall, 
+    seasons, 
+    holiday, 
+    functioning)
+```
+
+### 6: Create summary statistics (especially related to the bike rental count)
+
+```{r}
+# Summary Stats across numeric variables is done above
+# Summary Statistics across categorical variabels
+data |>
+  group_by(rented_bike_count, functioning) |>
+  summarize(count = n())
+# rented_bike_data across functioning = "No" has 295 values
+```
+
+```{r}
+# Summary Statistics across categorical variabels
+data |>
+  group_by(rented_bike_count, seasons, holiday) |>
+  summarize(count = n())
+```
+
+```{r}
+# Sub setting data to only include rentals during functioning hours
+data <- data |>
+  filter(functioning == "Yes")
+```
+
+### 7: To simplify our analysis, we’ll summarize across the hours so that each day has one observation associated with it.
+
+```{r}
+data <- data |>
+  group_by(date, seasons, holiday) |> #grouping variables
+  summarize( # variable sums and means
+    total_bike_count = sum(rented_bike_count),
+    total_rainfall = sum(rainfall),
+    total_snowfall = sum(snowfall),
+    mean_temperature = mean(temperature),
+    mean_humidity = mean(humidity),
+    mean_wind_speed = mean(wind_speed),
+    mean_visibility = mean(visibility),
+    mean_dew_point_temp = mean(dew_point_temp),
+    mean_solar_radiation = mean(solar_radiation),
+    mean_rainfall = mean(rainfall),
+    mean_snowfall = mean(snowfall))
+```
+
+### 8: Recreate your basic summary stats and then create some plots to explore relationships. Report correlation between your numeric variables as well.
+
+```{r}
+# Basic summary statistics
+summary(data)
+```
+
+```{r}
+# Scatter Plots showing relationship between bike rentals and temperature
+g <- ggplot(data, aes(x = total_bike_count, 
+                      y = mean_temperature,
+                      color = seasons))
+g + geom_point()
+```
+
+```{r}
+# Scatter Plots showing relationship between bike rentals and rainfall
+s <- ggplot(data, aes(x = total_bike_count, 
+                      y = mean_temperature,
+                      color = holiday))
+s + geom_point()
 ```
 
 
+```{r}
+# Scatter Plots showing relationship between bike rentals and wind speed
+h <- ggplot(data, aes(x = total_bike_count, 
+                      y = mean_wind_speed,
+                      color = seasons))
+h + geom_point()
+```
+
+```{r}
+# Correlation between numeric variables
+cor(data[sapply(data, is.numeric)], use = "complete.obs")
+```
+
+## Step Three: Split the Data
+
+### 1: Use functions from tidymodels to split the data into a training and test set (75/25 split). Use the strata argument to stratify the split on the seasons variable.
+
+```{r}
+# splitting data into training (75%) and test (25%) set
+data_split <- initial_split(data, prop = 0.75, strata = seasons)
+data_train <- training(data_split) # Training data set
+data_test <- testing(data_split) # Test data set
+head(data_train)
+```
+
+### 2: On the training set, create a 10 fold CV split
+
+```{r}
+# Had issue with 10 fold CV, wasn't saving folds
+# This seemed to solve my issue
+
+# Storing training data in object
+fold_data <- data_train[1:263, ]
+
+# 10 fold CV
+fold_cv <- vfold_cv(fold_data, v = 10)
+```
+
+## Step Four: Fitting a Multiple Regression Model
+
+### Recipe 1
+
+Ingredients:
+  (A) Use the date variable to create a weekday/weekend (factor) variable. Then remove the date variable
+  (B) Standardize the numeric variables
+  (C) Create dummy variables for the seasons, holiday, and our new day type variable
+
+```{r}
+rec_1 <- recipe(total_bike_count ~ ., data = data_train) |>
+  
+  # Extract day of the week from date column
+  step_date(date, features = "dow", keep_original_cols = TRUE) |>
+  
+  step_mutate(dow = lubridate::wday(date)) |>
+  
+  # Create day type variable based on "week" column
+  step_mutate(day_type = factor(if_else(
+    dow == 1 | dow == 7,
+    "weekend",
+    "weekday"))) |>
+  
+  # Remove "dow" column as it is no longer needed
+  step_rm(dow) |>
+  
+  # Standardize numeric predictors
+  step_normalize(all_numeric_predictors()) |>
+  
+  # Create dummy variables for factor variables
+  step_dummy(all_nominal_predictors())
+```
+
+### Recipe 2
+
+Ingredients:
+  (A) Same as above
+  (B) Add in interactions between seasons and holiday, seasons and temp, temp and          rainfall
+  
+```{r}
+rec_2 <- recipe(total_bike_count ~ ., data = data_train) |>
+  
+  # Extract day of the week from date column
+  step_date(date, features = "dow", keep_original_cols = TRUE) |>
+  
+  step_mutate(dow = lubridate::wday(date)) |>
+  
+  # Create day type variable based on "week" column
+  step_mutate(day_type = factor(if_else(
+    dow == 1 | dow == 7,
+    "weekend",
+    "weekday"))) |>
+  
+  # Remove "dow" column as it is no longer needed
+  step_rm(dow) |>
+  
+  # Standardize numeric predictors
+  step_normalize(all_numeric_predictors()) |>
+  
+  # Create dummy variables for factor variables
+  step_dummy(all_nominal_predictors()) |>
+  
+  # Interactions between seasons and holiday, seasons and temp, temp and rainfall
+  step_interact(terms = ~seasons * holiday + seasons * mean_temperature + mean_temperature * total_rainfall)
+```
+
+### Recipe 3
+
+Ingredients:
+  (A) Same as 2nd recipe
+  (B) Add in quadratic terms for each numeric predictor
+
+```{r}
+rec_3 <- recipe(total_bike_count ~ ., data = data_train) |>
+  
+  # Extract day of the week from date column
+  step_date(date, features = "dow", keep_original_cols = TRUE) |>
+  
+  step_mutate(dow = lubridate::wday(date)) |>
+  
+  # Create day type variable based on "week" column
+  step_mutate(day_type = factor(if_else(
+    dow == 1 | dow == 7,
+    "weekend",
+    "weekday"))) |>
+  
+  # Remove "dow" column as it is no longer needed
+  step_rm(dow) |>
+  
+  # Standardize numeric predictors
+  step_normalize(all_numeric_predictors()) |>
+  
+  # Create dummy variables for factor variables
+  step_dummy(all_nominal_predictors()) |>
+  
+  # Interactions between seasons and holiday, seasons and temp, temp and rainfall
+  step_interact(terms = ~seasons * holiday + seasons * mean_temperature + mean_temperature * total_rainfall) |>
+  
+  # Add in quadratic terms for each numeric predictor
+  step_poly(all_numeric_predictors(), degree = 2)
+```
+
+### Setting up linear model fit using the "lm" engine
+
+```{r}
+# Linear regression model with "lm" engine
+lm_model <- linear_reg() |>
+  set_engine("lm")
+```
+
+
+### Combining Recipes and Model into a Workflow
+
+```{r}
+# rec_1 and model
+workflow_1 <- workflow() |>
+  add_recipe(rec_1) |>
+  add_model(lm_model)
+
+# rec_2 and model
+workflow_2 <- workflow() |>
+  add_recipe(rec_2) |>
+  add_model(lm_model)
+
+# rec_3 and model
+workflow_3 <- workflow() |>
+  add_recipe(rec_3) |>
+  add_model(lm_model)
+```
+
+
+### Fit the models using 10 fold CV via fit_resamples() and consider the training set CV error to choose a best model
+
+```{r}
+#| echo: true
+
+# Fitting Model 1
+model_1_fit <- fit_resamples(
+  workflow_1,
+  resamples = fold_cv, # 10-fold cross-validation from previous fold
+  metrics = metric_set(rmse, rsq)) # Evaluation metrics
+
+# Fitting Model 2
+model_2_fit <- fit_resamples(
+  workflow_2,
+  resamples = fold_cv, # 10-fold cross-validation from previous fold
+  metrics = metric_set(rmse, rsq)) # Evaluation metrics
+
+# Fitting Model 3
+model_3_fit <- fit_resamples(
+  workflow_3,
+  resamples = fold_cv, # 10-fold cross-validation from previous fold
+  metrics = metric_set(rmse, rsq)) # Evaluation metrics
+```
+
+**Could not get models 2 and 3 to run...**
+
+**I believe the issue is the step_interaction() syntax... Spent a lot of time trying to debug it... :(**
+
+**Since model_1_fit is the only model to run, by default it is my best model.**
+
+### Viewing model Metrics
+
+```{r}
+# Getting model_1_fit rmse and rsq metrics
+collect_metrics(model_1_fit)
+```
+
+### Fitting model to entire training set
+
+```{r}
+# Fitting model to entire training set
+model_1_full_fit <- last_fit(
+  workflow_1,
+  split = data_split)
+
+# Checking metrics
+collect_metrics(model_1_full_fit)
+```
+
+**Full Training Set RMSE = 4011.6345628**
+
+### Obtain the final model (fit on the entire training set) coefficient table using extract_fit_parsnip() and tidy().
+
+```{r}
+# Extract and view the final model's coefficient table
+coef_table <- model_1_full_fit |>
+  extract_fit_parsnip() |>
+  tidy()
+
+# Display the coefficient table
+coef_table
+```
